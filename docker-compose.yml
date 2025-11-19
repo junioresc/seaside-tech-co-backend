@@ -1,0 +1,150 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-seaside}
+      POSTGRES_USER: ${POSTGRES_USER:-seaside}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-seaside}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-seaside}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-net
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-net
+
+  minio-create-bucket:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >-
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin} &&
+      mc mb -p local/${S3_BUCKET_NAME:-seaside-media} || true &&
+      mc anonymous set download local/${S3_BUCKET_NAME:-seaside-media} || true
+      "
+    networks:
+      - app-net
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
+    networks:
+      - app-net
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.dev
+    env_file:
+      - config/env.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/workspace:cached
+    working_dir: /workspace/backend
+    command: bash -lc "sh ../scripts/wait-for-db.sh && python manage.py runserver 0.0.0.0:8000"
+    networks:
+      - app-net
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.dev
+    env_file:
+      - config/env.dev
+    depends_on:
+      api:
+        condition: service_started
+    volumes:
+      - ./:/workspace:cached
+    working_dir: /workspace/backend
+    command: bash -lc "celery -A seaside worker -l info"
+    networks:
+      - app-net
+
+  beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.dev
+    env_file:
+      - config/env.dev
+    depends_on:
+      api:
+        condition: service_started
+    volumes:
+      - ./:/workspace:cached
+    working_dir: /workspace/backend
+    command: bash -lc "celery -A seaside beat -l info"
+    networks:
+      - app-net
+
+  flower:
+    image: mher/flower:latest
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+    networks:
+      - app-net
+
+volumes:
+  postgres-data:
+  minio-data:
+
+networks:
+  app-net:
+    driver: bridge
+
+

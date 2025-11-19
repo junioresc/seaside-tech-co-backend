@@ -1,0 +1,7 @@
+Hello {{ customer.first_name }},
+
+Your repair (ID: {{ repair.id }}) status changed to {{ repair.status }}.
+
+View status: {{ public_url }}
+
+

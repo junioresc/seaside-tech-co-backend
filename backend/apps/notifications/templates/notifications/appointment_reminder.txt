@@ -1,0 +1,8 @@
+Hello {{ customer.first_name }},
+
+This is a reminder for your upcoming appointment.
+
+When: {{ appointment.start_at_local }}
+Where: {{ store.name }}
+
+

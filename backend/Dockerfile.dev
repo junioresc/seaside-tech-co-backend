@@ -1,0 +1,40 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=off \
+    PIP_DISABLE_PIP_VERSION_CHECK=on \
+    PIP_DEFAULT_TIMEOUT=100
+
+WORKDIR /workspace/backend
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       build-essential \
+       curl \
+       ca-certificates \
+       libpq-dev \
+       gcc \
+       netcat-openbsd \
+       libcairo2 \
+       libpango-1.0-0 \
+       libpangocairo-1.0-0 \
+       libpangoft2-1.0-0 \
+       libgdk-pixbuf-2.0-0 \
+       fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+# Allow installing packages when requirements are present later
+COPY ../config/env.dev /tmp/env.dev
+
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# Install Python dependencies (dev)
+COPY ./backend/requirements.txt /tmp/requirements.txt
+COPY ./backend/requirements-dev.txt /tmp/requirements-dev.txt
+RUN pip install -r /tmp/requirements-dev.txt
+
+# Keep image lean; deps will be installed by the container at runtime when project is scaffolded
+CMD ["bash", "-lc", "python --version && pip --version"]
+
+

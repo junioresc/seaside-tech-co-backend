@@ -1,0 +1,7 @@
+Low stock alert for {{ store.name }} ({{ store.organization.name }}):
+
+Product: {{ product.name }} (SKU: {{ product.sku }})
+Quantity remaining: {{ quantity }}
+Threshold: {{ threshold }}
+
+
