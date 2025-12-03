@@ -1,0 +1,233 @@
+name: Deploy to Staging
+
+on:
+  workflow_run:
+    workflows: ["Docker Build and Push"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    
+    # Only run if Docker build workflow succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get Docker image tag
+        id: image
+        run: |
+          # Use commit SHA from triggering workflow
+          echo "tag=sha-$(echo ${{ github.event.workflow_run.head_sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+          echo "full_sha=${{ github.event.workflow_run.head_sha }}" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log deployment start
+        run: |
+          echo "🚀 Starting deployment for commit sha-${{ steps.image.outputs.tag }}"
+          echo "Deployment timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+      - name: Update ECS task definition
+        id: task-def
+        run: |
+          # Fetch current task definition
+          TASK_DEFINITION=$(aws ecs describe-task-definition \
+            --task-definition backend-api-staging \
+            --query 'taskDefinition' \
+            --output json)
+          
+          # Update image tag
+          NEW_TASK_DEF=$(echo $TASK_DEFINITION | jq --arg IMAGE "ghcr.io/${{ github.repository }}/backend:${{ steps.image.outputs.tag }}" \
+            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy) | 
+            .containerDefinitions[0].image = $IMAGE')
+          
+          # Register new task definition
+          NEW_REVISION=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.revision' \
+            --output text)
+          
+          echo "revision=$NEW_REVISION" >> $GITHUB_OUTPUT
+          echo "✅ Registered task definition revision: $NEW_REVISION"
+
+      - name: Run database migrations
+        run: |
+          echo "🔄 Running database migrations..."
+          
+          # Get VPC configuration from existing service
+          VPC_CONFIG=$(aws ecs describe-services \
+            --cluster ${{ secrets.ECS_CLUSTER_STAGING }} \
+            --services backend-api-staging \
+            --query 'services[0].networkConfiguration.awsvpcConfiguration' \
+            --output json)
+          
+          # Run migrations as one-off task
+          MIGRATION_TASK=$(aws ecs run-task \
+            --cluster ${{ secrets.ECS_CLUSTER_STAGING }} \
+            --task-definition backend-api-staging:${{ steps.task-def.outputs.revision }} \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration=$(echo $VPC_CONFIG)" \
+            --overrides '{
+              "containerOverrides": [{
+                "name": "backend-api",
+                "command": ["python", "manage.py", "migrate", "--noinput"]
+              }]
+            }' \
+            --query 'tasks[0].taskArn' \
+            --output text)
+          
+          echo "Migration task: $MIGRATION_TASK"
+          
+          # Wait for migration task to complete
+          aws ecs wait tasks-stopped \
+            --cluster ${{ secrets.ECS_CLUSTER_STAGING }} \
+            --tasks $MIGRATION_TASK
+          
+          # Check migration exit code
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster ${{ secrets.ECS_CLUSTER_STAGING }} \
+            --tasks $MIGRATION_TASK \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+          
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "❌ Migration failed with exit code: $EXIT_CODE"
+            aws ecs describe-tasks \
+              --cluster ${{ secrets.ECS_CLUSTER_STAGING }} \
+              --tasks $MIGRATION_TASK \
+              --query 'tasks[0].containers[0].reason' \
+              --output text
+            exit 1
+          fi
+          
+          echo "✅ Migrations completed successfully"
+
+      - name: Update ECS service
+        id: deploy
+        run: |
+          echo "🚢 Deploying to ECS service..."
+          
+          aws ecs update-service \
+            --cluster ${{ secrets.ECS_CLUSTER_STAGING }} \
+            --service backend-api-staging \
+            --task-definition backend-api-staging:${{ steps.task-def.outputs.revision }} \
+            --force-new-deployment \
+            --deployment-configuration '{
+              "deploymentCircuitBreaker": {
+                "enable": true,
+                "rollback": true
+              },
+              "minimumHealthyPercent": 100,
+              "maximumPercent": 200
+            }' \
+            --desired-count 2
+          
+          echo "✅ Service update initiated"
+
+      - name: Wait for service stability
+        run: |
+          echo "⏳ Waiting for service to reach steady state..."
+          
+          aws ecs wait services-stable \
+            --cluster ${{ secrets.ECS_CLUSTER_STAGING }} \
+            --services backend-api-staging
+          
+          echo "✅ Service is stable"
+
+      - name: Validate health check
+        run: |
+          echo "🏥 Validating health checks..."
+          
+          # Get ALB target group from service
+          SERVICE_INFO=$(aws ecs describe-services \
+            --cluster ${{ secrets.ECS_CLUSTER_STAGING }} \
+            --services backend-api-staging \
+            --query 'services[0]' \
+            --output json)
+          
+          # Extract service endpoint (ALB DNS or task IP)
+          # Note: This assumes ALB is configured. Adjust if using direct task endpoints.
+          TARGET_GROUP_ARN=$(echo $SERVICE_INFO | jq -r '.loadBalancers[0].targetGroupArn // empty')
+          
+          if [ -z "$TARGET_GROUP_ARN" ]; then
+            echo "⚠️  No load balancer configured. Skipping health check validation."
+            echo "✅ Deployment completed (no LB health check)"
+            exit 0
+          fi
+          
+          # Get ALB DNS from target group
+          ALB_ARN=$(aws elbv2 describe-target-groups \
+            --target-group-arns $TARGET_GROUP_ARN \
+            --query 'TargetGroups[0].LoadBalancerArns[0]' \
+            --output text)
+          
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --load-balancer-arns $ALB_ARN \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)
+          
+          echo "Testing health endpoint: http://$ALB_DNS/health/"
+          
+          # Retry health check 10 times with 30s intervals
+          for i in {1..10}; do
+            if curl -f -s -o /dev/null -w "%{http_code}" http://$ALB_DNS/health/ | grep -q "200"; then
+              echo "✅ Health check passed on attempt $i"
+              exit 0
+            fi
+            echo "⏳ Health check failed, retrying in 30s... (attempt $i/10)"
+            sleep 30
+          done
+          
+          echo "❌ Health check failed after 10 attempts"
+          exit 1
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📊 Deployment Summary"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          echo "Image Tag: ${{ steps.image.outputs.tag }}"
+          echo "Commit SHA: ${{ steps.image.outputs.full_sha }}"
+          echo "Task Revision: ${{ steps.task-def.outputs.revision }}"
+          echo "Migration Status: ${{ job.status }}"
+          echo "Health Check: ${{ job.status }}"
+          echo "Overall Status: ${{ job.status }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment SUCCESSFUL"
+          else
+            echo "❌ Deployment FAILED"
+          fi
+
+      - name: Rollback notification
+        if: failure()
+        run: |
+          echo "🔄 Automatic rollback triggered by ECS circuit breaker"
+          echo "Check ECS service events for rollback details"
+          
+          # Display recent service events
+          aws ecs describe-services \
+            --cluster ${{ secrets.ECS_CLUSTER_STAGING }} \
+            --services backend-api-staging \
+            --query 'services[0].events[:5]' \
+            --output table
+

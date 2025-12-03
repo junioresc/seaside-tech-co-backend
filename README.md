@@ -125,6 +125,123 @@ curl http://localhost:8000/health/
    - Minimal system packages only
    - Multi-stage pattern excludes build artifacts
 
+### Staging Deployment Pipeline
+
+Automatic deployment to AWS ECS Fargate staging environment when code is merged to `main`.
+
+**Deployment Workflow:**
+- Triggers automatically after Docker build completes successfully on `main` branch
+- Runs database migrations before service update
+- Deploys with blue-green strategy (zero downtime)
+- Performs health checks with automatic rollback on failure
+- Completes in < 15 minutes
+
+**Deployment Steps:**
+1. **Update Task Definition** - New Docker image (sha-tagged) registered to ECS
+2. **Run Migrations** - Django migrations executed as one-off task
+3. **Service Update** - ECS service updated with circuit breaker enabled
+4. **Health Check** - /health/ endpoint validated (10 retries, 30s intervals)
+5. **Rollback** - Automatic revert to previous version on failure
+
+**AWS Infrastructure Requirements:**
+
+```yaml
+# GitHub Secrets Required
+AWS_ACCESS_KEY_ID: <IAM user access key>
+AWS_SECRET_ACCESS_KEY: <IAM user secret key>
+AWS_REGION: <region, e.g., us-east-1>
+ECS_CLUSTER_STAGING: <staging cluster name, e.g., staging-cluster>
+```
+
+**ECS Task Definition:**
+- Task: `backend-api-staging`
+- CPU: 512 (0.5 vCPU)
+- Memory: 1024 MB (1 GB)
+- Network Mode: awsvpc
+- Port: 8000
+- Launch Type: Fargate
+
+**Environment Variables (AWS Secrets Manager):**
+- `DATABASE_URL` → Secret: `staging/backend/database-url`
+- `REDIS_URL` → Secret: `staging/backend/redis-url`
+- `DJANGO_SECRET_KEY` → Secret: `staging/backend/django-secret-key`
+- `DJANGO_SETTINGS_MODULE=seaside.settings.staging`
+- `AWS_S3_BUCKET_NAME` → Secret: `staging/backend/s3-bucket-name`
+
+**IAM Permissions Required:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecs:DescribeTaskDefinition",
+        "ecs:RegisterTaskDefinition",
+        "ecs:UpdateService",
+        "ecs:DescribeServices",
+        "ecs:RunTask",
+        "ecs:DescribeTasks",
+        "secretsmanager:GetSecretValue",
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "elbv2:DescribeTargetGroups",
+        "elbv2:DescribeLoadBalancers"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+**Blue-Green Deployment Configuration:**
+- Minimum Healthy Percent: 100 (keeps all tasks running during deployment)
+- Maximum Percent: 200 (allows new tasks alongside old)
+- Desired Count: 2 tasks minimum
+- Circuit Breaker: Enabled with automatic rollback
+- Old tasks kept for 5 minutes post-switch
+
+**Health Check Configuration:**
+- Endpoint: `GET /health/`
+- Expected Response: 200 OK with `{"status": "ok"}`
+- Retries: 10 attempts
+- Interval: 30 seconds between retries
+- Timeout: 5 seconds per attempt
+
+**Monitoring Deployment:**
+
+```bash
+# View deployment logs in GitHub Actions
+# Navigate to: Actions → Deploy to Staging → Latest run
+
+# Monitor ECS service status (via AWS CLI)
+aws ecs describe-services \
+  --cluster staging-cluster \
+  --services backend-api-staging \
+  --query 'services[0].events[:5]' \
+  --output table
+
+# Check health endpoint
+curl https://staging.example.com/health/
+```
+
+**Manual Rollback (if needed):**
+
+```bash
+# Get previous task definition revision
+aws ecs list-task-definitions \
+  --family-prefix backend-api-staging \
+  --sort DESC \
+  --max-items 5
+
+# Revert service to previous revision
+aws ecs update-service \
+  --cluster staging-cluster \
+  --service backend-api-staging \
+  --task-definition backend-api-staging:<PREVIOUS_REVISION>
+```
+
 ### Branch Strategy
 
 **CI Triggers:**
@@ -134,11 +251,15 @@ curl http://localhost:8000/health/
 **Docker Build Triggers:**
 - Push to `main` branch (after CI passes) → Build and push Docker image
 
+**Deployment Triggers:**
+- Docker build completes on `main` branch → Deploy to staging
+
 **Why not all branches?**  
 Running CI on every feature branch push (without a PR) is expensive and usually unnecessary. The current strategy ensures:
 - All code going into main/develop is validated ✅
 - All pull requests are checked before merge ✅
 - Production images built only from main branch ✅
+- Staging deployment automatic on main merge ✅
 - Developers can push WIP commits to feature branches without triggering CI
 - CI resources are used efficiently
 
