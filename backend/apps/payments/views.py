@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 
 class CheckoutView(APIView):
     def post(self, request: HttpRequest) -> Response:
-        stripe.api_key = settings.STRIPE_SECRET_KEY
+        stripe.api_key = settings.STRIPE_SECRET_KEY  # type: ignore
         # NOTE: minimal placeholder PaymentIntent
         intent = stripe.PaymentIntent.create(amount=1000, currency="usd")
         return Response({"client_secret": intent["client_secret"]})

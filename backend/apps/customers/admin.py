@@ -28,4 +28,4 @@ class CustomerAdmin(admin.ModelAdmin):
     def user_linked(self, obj: Customer) -> bool:
         return bool(obj.user_id)
 
-    user_linked.boolean = True
+    user_linked.boolean = True  # type: ignore

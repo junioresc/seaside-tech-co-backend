@@ -7,7 +7,7 @@ from .serializers import AppointmentSerializer, ServiceTypeSerializer
 class AppointmentCreateView(generics.CreateAPIView):
     serializer_class = AppointmentSerializer
 
-    def create(self, request, *args, **kwargs):  # type: ignore[override]
+    def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
 
 
@@ -21,7 +21,7 @@ class AppointmentListView(generics.ListAPIView):
 class AppointmentCheckinView(generics.CreateAPIView):
     serializer_class = AppointmentSerializer
 
-    def create(self, request, *args, **kwargs):  # type: ignore[override]
+    def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
 
 

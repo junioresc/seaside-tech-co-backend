@@ -24,7 +24,11 @@ class DeviceType(BaseModel):
 
 
 class RepairStatusMixin:
-    """Mixin to provide STATUS choices for RepairOrder history."""
+    """Mixin to provide STATUS choices for RepairOrder history.
+
+    This mixin ensures that HistoricalRecords can access STATUS choices,
+    which is required for StatusField compatibility with django-simple-history.
+    """
 
     STATUS = Choices(
         ("received", "Received"),

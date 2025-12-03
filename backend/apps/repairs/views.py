@@ -1,3 +1,5 @@
+from typing import Optional
+
 from django.shortcuts import get_object_or_404
 
 from rest_framework import generics, mixins, status, viewsets
@@ -18,7 +20,7 @@ class RepairOrderViewSet(
     serializer_class = RepairOrderSerializer
 
     @action(detail=True, methods=["post"], url_path="line-items")
-    def add_line_item(self, request, pk: str = None):  # type: ignore[override]
+    def add_line_item(self, request, pk: Optional[str] = None):
         repair = self.get_object()
         serializer = RepairLineItemSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -38,7 +40,7 @@ class PublicRepairTrackView(generics.RetrieveAPIView):
 class IntakeCreateView(generics.CreateAPIView):
     serializer_class = RepairOrderSerializer
 
-    def create(self, request, *args, **kwargs):  # type: ignore[override]
+    def create(self, request, *args, **kwargs):
         store_id = getattr(request, "store_id", None)
         if not store_id:
             return Response({"detail": "Missing X-Store-ID"}, status=status.HTTP_400_BAD_REQUEST)

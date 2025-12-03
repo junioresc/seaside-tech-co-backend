@@ -68,20 +68,68 @@ ignore_errors = true
 module = "tests.*"
 disallow_untyped_defs = false
 
+# Third-party libraries without type stubs
+[[tool.mypy.overrides]]
+module = ["celery.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["environ.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["sentry_sdk.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["simple_history.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["encrypted_fields.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["weasyprint.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*"]
+ignore_missing_imports = true
+
 [tool.django-stubs]
 django_settings_module = "seaside.settings.dev"
 
-[tool.flake8]
-max-line-length = 100
-extend-ignore = ["E203", "E266", "E501", "W503"]
-exclude = [
-    ".git",
-    "__pycache__",
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "seaside.settings.dev"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--reuse-db --nomigrations"
+
+[tool.coverage.run]
+source = ["."]
+omit = [
     "*/migrations/*",
-    ".venv",
-    "venv",
-    "build",
-    "dist"
+    "*/tests/*",
+    "*/admin.py",
+    "*/__init__.py",
+    "manage.py",
+    "wsgi.py",
+    "asgi.py",
 ]
-max-complexity = 10
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+# Note: flake8 configuration is in .flake8 file (root directory)
+# flake8 does not natively support pyproject.toml without flake8-pyproject plugin
 

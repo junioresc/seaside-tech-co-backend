@@ -69,7 +69,7 @@ class MeAvatarView(APIView):
         if content_type not in self.ALLOWED_CONTENT_TYPES:
             return Response({"detail": "unsupported file type"}, status=400)
 
-        profile = request.user.profile  # type: ignore[attr-defined]
+        profile = request.user.profile  # type: ignore
         # Delete old files if present
         if profile.avatar:
             try:
@@ -88,7 +88,7 @@ class MeAvatarView(APIView):
         # Generate thumbnail (256x256, maintaining aspect)
         file.seek(0)
         image = Image.open(file)
-        image = image.convert("RGB") if image.mode in ("RGBA", "P") else image
+        image = image.convert("RGB") if image.mode in ("RGBA", "P") else image  # type: ignore
         image.thumbnail((256, 256))
         thumb_buffer = BytesIO()
         image.save(thumb_buffer, format="JPEG", quality=85, optimize=True)
@@ -103,7 +103,7 @@ class MeAvatarView(APIView):
         )
 
     def delete(self, request: Request) -> Response:
-        profile = request.user.profile  # type: ignore[attr-defined]
+        profile = request.user.profile  # type: ignore
         if profile.avatar:
             try:
                 default_storage.delete(profile.avatar.name)
