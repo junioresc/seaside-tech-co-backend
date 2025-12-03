@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest
 
 import stripe
 from rest_framework import status

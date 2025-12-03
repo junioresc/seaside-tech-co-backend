@@ -28,7 +28,7 @@ def set_refresh_cookie(response: Response, refresh_token: str) -> None:
 
 
 class CookieTokenObtainPairView(TokenObtainPairView):
-    def post(self, request: Request, *args, **kwargs) -> Response:  # type: ignore[override]
+    def post(self, request: Request, *args, **kwargs) -> Response:
         response = super().post(request, *args, **kwargs)
         refresh = response.data.get("refresh")
         if refresh:
@@ -39,7 +39,7 @@ class CookieTokenObtainPairView(TokenObtainPairView):
 
 
 class CookieTokenRefreshView(TokenRefreshView):
-    def post(self, request: Request, *args, **kwargs) -> Response:  # type: ignore[override]
+    def post(self, request: Request, *args, **kwargs) -> Response:
         if not request.data.get("refresh"):
             cookie_refresh = request.COOKIES.get(REFRESH_COOKIE_NAME)
             if cookie_refresh:

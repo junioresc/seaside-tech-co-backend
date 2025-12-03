@@ -22,8 +22,10 @@ class DeviceType(BaseModel):
     def __str__(self) -> str:  # pragma: no cover
         return self.name
 
+
 class RepairStatusMixin:
     """Mixin to provide STATUS choices for RepairOrder history."""
+
     STATUS = Choices(
         ("received", "Received"),
         ("diagnosing", "Diagnosing"),

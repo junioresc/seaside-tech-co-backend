@@ -11,6 +11,6 @@ SECURE_HSTS_PRELOAD = True
 SECURE_REFERRER_POLICY = "same-origin"
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"] = [  # type: ignore[name-defined]
+REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"] = [  # noqa
     "rest_framework.renderers.JSONRenderer",
 ]

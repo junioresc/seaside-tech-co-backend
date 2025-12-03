@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from django.urls import reverse
-
 from celery import shared_task
 
-from apps.customers.models import Customer
 from apps.notifications.services import EmailSender, SMSSender
 from apps.repairs.models import RepairOrder
 
