@@ -49,10 +49,78 @@ jobs:
           mypy .
         continue-on-error: false
 
+  security-scanning:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: quality-checks
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      
+      - name: Install Bandit
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit
+      
+      - name: Run Bandit Security Scan
+        run: |
+          echo "🔍 Running Bandit security scan on backend/"
+          bandit -r backend/ -f json -o bandit-report.json || true
+          
+          echo ""
+          echo "📊 Analyzing security findings..."
+          
+          # Check if report exists and has content
+          if [ ! -f bandit-report.json ]; then
+            echo "❌ Error: bandit-report.json not generated"
+            exit 1
+          fi
+          
+          # Parse and display results
+          if grep -q '"issue_severity": "HIGH"' bandit-report.json; then
+            echo ""
+            echo "❌ HIGH-SEVERITY SECURITY ISSUES FOUND!"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            cat bandit-report.json
+            echo ""
+            echo "🔧 Action Required: Fix high-severity issues before merging"
+            echo "📚 Bandit Documentation: https://bandit.readthedocs.io/"
+            exit 1
+          fi
+          
+          # Check for medium/low severity issues (warnings only)
+          if grep -q '"issue_severity": "MEDIUM"' bandit-report.json || grep -q '"issue_severity": "LOW"' bandit-report.json; then
+            echo ""
+            echo "⚠️  Medium/Low severity issues found (warnings only)"
+            echo ""
+            cat bandit-report.json
+          else
+            echo ""
+            echo "✅ No security issues found - all checks passed!"
+          fi
+      
+      - name: Upload Security Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-security-report
+          path: bandit-report.json
+          retention-days: 90
+
   test-execution:
     name: Test Execution with Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: security-scanning
     
     services:
       postgres:

@@ -242,6 +242,264 @@ aws ecs update-service \
   --task-definition backend-api-staging:<PREVIOUS_REVISION>
 ```
 
+### Security Scanning Pipeline
+
+Automated security vulnerability scanning is integrated into the CI pipeline to identify and prevent security issues.
+
+**Security Scanning Workflow:**
+- Triggers on every push and pull request (after code quality checks, before tests)
+- Completes in < 2 minutes
+- High-severity issues fail the workflow and block merging
+- Medium/low severity issues logged as warnings
+
+**Security Tools:**
+
+#### 1. Bandit Python Security Linter
+
+Scans Python code for common security vulnerabilities.
+
+**What it detects:**
+- SQL injection vulnerabilities
+- Hardcoded passwords or secrets
+- Insecure cryptographic usage (MD5, SHA1)
+- Use of `eval()` or `exec()` (arbitrary code execution)
+- Pickle usage (insecure deserialization)
+- Shell injection vulnerabilities
+- Path traversal vulnerabilities
+- XML external entity (XXE) vulnerabilities
+
+**Severity Levels:**
+- **HIGH** → Workflow FAILS (blocks merge)
+- **MEDIUM** → Warning only (workflow continues)
+- **LOW** → Informational (workflow continues)
+
+**Run Bandit Locally:**
+
+```bash
+# Install Bandit
+pip install bandit
+
+# Scan backend directory
+bandit -r backend/ -f json -o bandit-report.json
+
+# View report
+cat bandit-report.json
+```
+
+**View Security Reports:**
+1. Navigate to GitHub Actions → CI Pipeline workflow
+2. Click on a workflow run
+3. Scroll to "Artifacts" section
+4. Download `bandit-security-report` artifact
+5. Reports retained for 90 days
+
+#### 2. Dependabot Dependency Scanning
+
+Automatically scans Python dependencies for known vulnerabilities (CVEs) and creates pull requests to update vulnerable packages.
+
+**Configuration:**
+- Scans: `backend/requirements.txt` and `backend/requirements-dev.txt`
+- Schedule: Daily at 00:00 UTC
+- Automatic PR creation for security updates
+- Groups critical/high severity updates together
+
+**Reviewing Dependabot PRs:**
+1. Check PR description for vulnerability details (CVE links, severity)
+2. Review changelog and breaking changes
+3. Verify tests pass in CI
+4. Merge promptly (especially for critical/high severity)
+
+**Monitor Dependabot:**
+- GitHub UI → Settings → Security → Dependabot
+- View open security alerts
+- Check PR update schedule
+
+#### 3. GitHub Secret Scanning
+
+Prevents accidental exposure of secrets (API keys, passwords, tokens) in commits.
+
+**Enabling Secret Scanning:**
+
+1. Navigate to repository Settings → Security
+2. Enable "Secret scanning"
+3. Enable "Push protection" (blocks commits containing secrets)
+4. Enable "Dependabot alerts"
+
+**Note:** GitHub Advanced Security may be required for private repositories.
+
+**What it detects:**
+- API keys (AWS, Stripe, etc.)
+- Database connection strings
+- Django `SECRET_KEY`
+- OAuth tokens
+- Private SSH/TLS keys
+- Password literals
+
+**If a secret is exposed:**
+1. **Revoke the secret immediately** (rotate API key, change password)
+2. Remove the secret from code
+3. Add to `.env` file (gitignored) for local development
+4. Use GitHub Secrets for CI/CD
+5. Use AWS Secrets Manager for production runtime
+
+### Security Best Practices
+
+**Never commit secrets to the repository:**
+
+```bash
+# ❌ NEVER do this
+DATABASE_URL = "postgresql://user:password@host/db"
+STRIPE_SECRET_KEY = "sk_live_abc123..."
+
+# ✅ DO THIS instead
+# In code
+DATABASE_URL = os.environ.get("DATABASE_URL")
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+
+# In local development (.env file, gitignored)
+DATABASE_URL=postgresql://user:password@localhost/db
+STRIPE_SECRET_KEY=sk_test_abc123
+
+# In CI/CD (GitHub Secrets)
+# Settings → Secrets → Actions → New repository secret
+
+# In production (AWS Secrets Manager)
+aws secretsmanager create-secret \
+  --name staging/backend/stripe-secret-key \
+  --secret-string "sk_live_abc123..."
+```
+
+**Regularly update dependencies:**
+
+```bash
+# Check for outdated packages
+pip list --outdated
+
+# Update specific package
+pip install --upgrade package-name
+
+# Update requirements file
+pip freeze > backend/requirements.txt
+```
+
+**Review security findings promptly:**
+- Check Dependabot PRs daily
+- Investigate Bandit high-severity findings immediately
+- Review secret scanning alerts within 24 hours
+
+**Follow secure coding practices:**
+- Use parameterized queries (prevent SQL injection)
+- Validate and sanitize user input
+- Use Django's built-in security features (CSRF, XSS protection)
+- Keep dependencies up to date
+- Use HTTPS everywhere
+- Implement proper authentication and authorization
+
+### Remediation Procedures
+
+#### Fixing Bandit Security Findings
+
+1. **Review the finding:**
+   - Download `bandit-security-report` artifact from GitHub Actions
+   - Identify: file, line number, issue type, severity
+
+2. **Common fixes:**
+
+   **Hardcoded password:**
+   ```python
+   # ❌ Before
+   password = "admin123"
+   
+   # ✅ After
+   password = os.environ.get("ADMIN_PASSWORD")
+   ```
+
+   **SQL injection vulnerability:**
+   ```python
+   # ❌ Before
+   cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")
+   
+   # ✅ After
+   cursor.execute("SELECT * FROM users WHERE id = %s", [user_id])
+   ```
+
+   **Insecure cryptography:**
+   ```python
+   # ❌ Before
+   import hashlib
+   hashlib.md5(password.encode())
+   
+   # ✅ After
+   from django.contrib.auth.hashers import make_password
+   make_password(password)
+   ```
+
+3. **Verify fix:**
+   ```bash
+   bandit -r backend/ -f json -o bandit-report.json
+   # Check that issue is resolved
+   ```
+
+4. **Commit and push** - CI will re-scan automatically
+
+#### Handling Exposed Secrets
+
+1. **Immediate action:**
+   - **Revoke/rotate the secret NOW** (don't wait)
+   - Exposed secrets should be considered compromised
+
+2. **Remove from code:**
+   ```bash
+   # Remove secret from current commit
+   git reset HEAD~1
+   # Edit file to remove secret
+   # Commit without secret
+   
+   # If already pushed, rewrite history (coordinate with team)
+   git filter-branch --force --index-filter \
+     "git rm --cached --ignore-unmatch path/to/file" \
+     --prune-empty --tag-name-filter cat -- --all
+   
+   # Force push (⚠️ coordinate with team)
+   git push origin --force --all
+   ```
+
+3. **Use proper secret management:**
+   - Local: `.env` file (add to `.gitignore`)
+   - CI/CD: GitHub Secrets
+   - Production: AWS Secrets Manager
+
+#### Updating Vulnerable Dependencies
+
+1. **Review Dependabot PR:**
+   - Check vulnerability details (CVE link, severity)
+   - Review changelog for breaking changes
+   - Check if tests pass
+
+2. **Update locally (if needed):**
+   ```bash
+   # Update specific package
+   pip install --upgrade package-name==X.Y.Z
+   
+   # Update requirements
+   pip freeze > backend/requirements.txt
+   
+   # Run tests
+   pytest backend/tests/
+   ```
+
+3. **Merge Dependabot PR** - tests pass + no breaking changes
+
+4. **Monitor deployment** - verify staging environment after update
+
+### Security Resources
+
+- **Bandit Documentation:** https://bandit.readthedocs.io/
+- **Dependabot Documentation:** https://docs.github.com/en/code-security/dependabot
+- **GitHub Secret Scanning:** https://docs.github.com/en/code-security/secret-scanning
+- **Django Security:** https://docs.djangoproject.com/en/stable/topics/security/
+- **OWASP Top 10:** https://owasp.org/www-project-top-ten/
+
 ### Branch Strategy
 
 **CI Triggers:**
