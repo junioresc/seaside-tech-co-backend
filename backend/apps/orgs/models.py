@@ -32,12 +32,12 @@ class Membership(BaseModel):
         ("manager", "Manager"),
         ("admin", "Admin"),
     )
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="memberships")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="memberships"
+    )
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name="memberships")
     role = models.CharField(max_length=30, choices=ROLE_CHOICES)
     is_default = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ("user", "store")
-
-

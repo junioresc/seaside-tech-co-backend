@@ -17,5 +17,3 @@ class StoreFactory(factory.django.DjangoModelFactory):
     organization = factory.SubFactory(OrganizationFactory)
     name = factory.Faker("company")
     timezone = "America/Los_Angeles"
-
-

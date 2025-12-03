@@ -12,5 +12,3 @@ class StoreScopeMiddleware:
         if store_id:
             request.store_id = store_id  # type: ignore[attr-defined]
         return self.get_response(request)
-
-

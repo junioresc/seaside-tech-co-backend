@@ -18,5 +18,3 @@ class StoreAdmin(admin.ModelAdmin):
 class MembershipAdmin(admin.ModelAdmin):
     list_display = ("user", "store", "role", "is_default")
     list_filter = ("role", "store")
-
-

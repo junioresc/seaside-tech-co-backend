@@ -15,5 +15,3 @@ class AppointmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Appointment
         fields = ["id", "status", "start_at", "end_at", "service_type", "checkin_token"]
-
-

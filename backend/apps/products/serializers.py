@@ -16,5 +16,3 @@ class ProductSerializer(serializers.ModelSerializer):
             "inventory_count",
             "images",
         ]
-
-

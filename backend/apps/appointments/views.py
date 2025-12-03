@@ -30,5 +30,3 @@ class ServiceTypeListView(generics.ListAPIView):
 
     def get_queryset(self):
         return ServiceType.objects.all().order_by("name")
-
-

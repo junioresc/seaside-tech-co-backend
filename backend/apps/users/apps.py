@@ -7,5 +7,3 @@ class UsersConfig(AppConfig):
 
     def ready(self) -> None:  # pragma: no cover
         from . import signals  # noqa: F401
-
-

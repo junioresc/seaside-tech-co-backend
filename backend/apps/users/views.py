@@ -1,15 +1,16 @@
+from io import BytesIO
+
 from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+
+from PIL import Image
+from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.parsers import MultiPartParser, FormParser
-from PIL import Image
-from io import BytesIO
-from django.core.files.base import ContentFile
-from django.core.files.storage import default_storage
-
 
 REFRESH_COOKIE_NAME = "refresh"
 
@@ -96,7 +97,10 @@ class MeAvatarView(APIView):
         profile.avatar_thumb.save(thumb_name, thumb_content, save=False)
 
         profile.save(update_fields=["avatar", "avatar_thumb"])
-        return Response({"avatar_url": profile.avatar.url, "avatar_thumb_url": profile.avatar_thumb.url}, status=200)
+        return Response(
+            {"avatar_url": profile.avatar.url, "avatar_thumb_url": profile.avatar_thumb.url},
+            status=200,
+        )
 
     def delete(self, request: Request) -> Response:
         profile = request.user.profile  # type: ignore[attr-defined]
@@ -114,5 +118,3 @@ class MeAvatarView(APIView):
             profile.avatar_thumb = None
         profile.save(update_fields=["avatar", "avatar_thumb"])
         return Response(status=204)
-
-

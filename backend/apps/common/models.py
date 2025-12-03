@@ -9,5 +9,3 @@ class BaseModel(UUIDModel, TimeStampedModel):
 
     class Meta:
         abstract = True
-
-

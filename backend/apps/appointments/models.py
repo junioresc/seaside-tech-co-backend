@@ -16,7 +16,9 @@ class ServiceType(BaseModel):
 
 class Appointment(BaseModel):
     store = models.ForeignKey(Store, on_delete=models.PROTECT, related_name="appointments")
-    customer = models.ForeignKey("customers.Customer", on_delete=models.SET_NULL, null=True, blank=True)
+    customer = models.ForeignKey(
+        "customers.Customer", on_delete=models.SET_NULL, null=True, blank=True
+    )
     service_type = models.ForeignKey(ServiceType, on_delete=models.PROTECT)
     start_at = models.DateTimeField(db_index=True)
     end_at = models.DateTimeField(db_index=True)
@@ -31,11 +33,11 @@ class Appointment(BaseModel):
         default="booked",
     )
     notes = models.TextField(null=True, blank=True)
-    created_by = models.ForeignKey("users.UserProfile", on_delete=models.SET_NULL, null=True, blank=True)
+    created_by = models.ForeignKey(
+        "users.UserProfile", on_delete=models.SET_NULL, null=True, blank=True
+    )
     assigned_technician = models.ForeignKey(
         "technicians.Technician", on_delete=models.SET_NULL, null=True, blank=True
     )
     checkin_token = models.CharField(max_length=64, null=True, blank=True)
     metadata = models.JSONField(null=True, blank=True)
-
-

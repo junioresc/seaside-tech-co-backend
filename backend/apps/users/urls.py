@@ -7,5 +7,3 @@ urlpatterns = [
     path("auth/refresh/", CookieTokenRefreshView.as_view(), name="token_refresh"),
     path("users/me/avatar/", MeAvatarView.as_view(), name="me-avatar"),
 ]
-
-

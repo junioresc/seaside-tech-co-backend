@@ -10,5 +10,3 @@ class ProductListView(generics.ListAPIView):
     def get_queryset(self):
         qs = Product.objects.all().order_by("name")
         return qs
-
-

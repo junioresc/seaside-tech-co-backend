@@ -11,5 +11,3 @@ class Technician(BaseModel):
 
     def __str__(self) -> str:  # pragma: no cover
         return f"Tech: {self.profile.user.get_username()}"
-
-

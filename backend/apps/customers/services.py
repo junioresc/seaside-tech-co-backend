@@ -30,5 +30,3 @@ def auto_link_customer_for_user(user, create_if_missing: bool = True) -> Custome
             last_name=getattr(user, "last_name", "") or "",
         )
     return None
-
-

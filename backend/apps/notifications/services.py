@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-import boto3
-from botocore.config import Config
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
+
+import boto3
+from botocore.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,9 @@ class EmailSender:
             )
         else:
             logger.info("Sending email via SMTP to %s", to)
-            msg = EmailMultiAlternatives(subject=subject, body=text_body, from_email=from_email, to=to)
+            msg = EmailMultiAlternatives(
+                subject=subject, body=text_body, from_email=from_email, to=to
+            )
             msg.attach_alternative(html_body, "text/html")
             msg.send(fail_silently=False)
 
@@ -73,5 +76,3 @@ class SMSSender:
             self._sns.publish(PhoneNumber=to_e164, Message=message)
         else:
             logger.info("[DEV] SMS to %s: %s", to_e164, message)
-
-

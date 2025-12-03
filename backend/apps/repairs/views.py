@@ -1,15 +1,19 @@
 from django.shortcuts import get_object_or_404
+
 from rest_framework import generics, mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.customers.models import Customer
 from apps.orgs.models import Store
+
 from .models import DeviceType, RepairLineItem, RepairOrder
 from .serializers import DeviceTypeSerializer, RepairLineItemSerializer, RepairOrderSerializer
 
 
-class RepairOrderViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin, mixins.UpdateModelMixin):
+class RepairOrderViewSet(
+    viewsets.GenericViewSet, mixins.RetrieveModelMixin, mixins.UpdateModelMixin
+):
     queryset = RepairOrder.objects.all()
     serializer_class = RepairOrderSerializer
 
@@ -49,7 +53,9 @@ class IntakeCreateView(generics.CreateAPIView):
         if email:
             customer = Customer.objects.filter(email=email).first()
         if not customer:
-            customer = Customer.objects.create(email=email, first_name=first_name, last_name=last_name, phone=phone)
+            customer = Customer.objects.create(
+                email=email, first_name=first_name, last_name=last_name, phone=phone
+            )
         device = data.get("device") or {}
         repair = RepairOrder.objects.create(
             store=store,
@@ -58,7 +64,9 @@ class IntakeCreateView(generics.CreateAPIView):
             device_model=device.get("model"),
             device_serial=device.get("serial"),
             issue_description=data.get("issue_description"),
-            public_lookup_token=customer.id.hex[:20],  # simple stable token; can be randomized later
+            public_lookup_token=customer.id.hex[
+                :20
+            ],  # simple stable token; can be randomized later
         )
         serializer = self.get_serializer(repair)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -69,5 +77,3 @@ class DeviceTypeListView(generics.ListAPIView):
 
     def get_queryset(self):
         return DeviceType.objects.all().order_by("name")
-
-

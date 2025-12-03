@@ -1,5 +1,6 @@
-from celery import shared_task
 from django.utils import timezone
+
+from celery import shared_task
 
 from apps.appointments.models import Appointment
 from apps.notifications.services import EmailSender
@@ -16,6 +17,9 @@ def send_appointment_reminder_task(appointment_id: str) -> None:
         "appointment": {"start_at_local": start_local},
         "store": appt.store,
     }
-    EmailSender().send_template([appt.customer.email], "Appointment reminder", "notifications/appointment_reminder.html", context)
-
-
+    EmailSender().send_template(
+        [appt.customer.email],
+        "Appointment reminder",
+        "notifications/appointment_reminder.html",
+        context,
+    )

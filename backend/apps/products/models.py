@@ -1,8 +1,10 @@
+from decimal import Decimal
+
 from django.db import models
 
-from apps.common.models import BaseModel
 from simple_history.models import HistoricalRecords
-from decimal import Decimal
+
+from apps.common.models import BaseModel
 
 
 class Product(BaseModel):
@@ -21,12 +23,12 @@ class Product(BaseModel):
 
 class ProductInventory(BaseModel):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="inventories")
-    store = models.ForeignKey("orgs.Store", on_delete=models.CASCADE, related_name="product_inventories")
+    store = models.ForeignKey(
+        "orgs.Store", on_delete=models.CASCADE, related_name="product_inventories"
+    )
     quantity = models.IntegerField(default=0)
     low_stock_threshold = models.IntegerField(default=5)
     history = HistoricalRecords()
 
     class Meta:
         unique_together = ("product", "store")
-
-

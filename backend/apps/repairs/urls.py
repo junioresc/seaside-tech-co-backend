@@ -1,4 +1,5 @@
 from django.urls import include, path
+
 from rest_framework.routers import DefaultRouter
 
 from .views import DeviceTypeListView, IntakeCreateView, PublicRepairTrackView, RepairOrderViewSet
@@ -12,5 +13,3 @@ urlpatterns = [
     path("intake/", IntakeCreateView.as_view(), name="intake"),
     path("reference/device-types/", DeviceTypeListView.as_view(), name="device-type-list"),
 ]
-
-

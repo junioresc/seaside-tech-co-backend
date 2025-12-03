@@ -1,9 +1,8 @@
 from django.contrib.auth import get_user_model
+from django.core.validators import FileExtensionValidator
 from django.db import models
 
 from apps.common.models import BaseModel
-from django.core.validators import FileExtensionValidator
-
 
 User = get_user_model()
 
@@ -26,5 +25,3 @@ class UserProfile(BaseModel):
 
     def __str__(self) -> str:  # pragma: no cover
         return f"{self.user.get_username()} ({self.role})"
-
-

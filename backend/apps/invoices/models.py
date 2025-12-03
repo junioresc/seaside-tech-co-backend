@@ -1,8 +1,10 @@
+from decimal import Decimal
+
 from django.db import models
 
-from apps.common.models import BaseModel
 from simple_history.models import HistoricalRecords
-from decimal import Decimal
+
+from apps.common.models import BaseModel
 
 
 class Invoice(BaseModel):
@@ -16,5 +18,3 @@ class Invoice(BaseModel):
     stripe_payment_intent = models.CharField(max_length=200, null=True, blank=True)
     pdf_url = models.URLField(null=True, blank=True)
     history = HistoricalRecords()
-
-
