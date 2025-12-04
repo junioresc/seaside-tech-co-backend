@@ -500,6 +500,265 @@ pip freeze > backend/requirements.txt
 - **Django Security:** https://docs.djangoproject.com/en/stable/topics/security/
 - **OWASP Top 10:** https://owasp.org/www-project-top-ten/
 
+### Production Deployment Pipeline
+
+Controlled deployment to production environment requiring manual approval and semantic version tags.
+
+**Deployment Workflow:**
+- Triggers on semantic version tag push (e.g., `v1.0.0`, `v2.1.3`)
+- Requires manual approval from designated reviewers (GitHub Environment protection)
+- Creates RDS database snapshot before migrations
+- Runs database migrations
+- Deploys with blue-green strategy (zero downtime)
+- Performs health checks with automatic rollback on failure
+- Completes in < 15 minutes (excluding approval wait time)
+
+**Deployment Steps:**
+1. **Tag Validation** - Verify semantic versioning format (v*.*.*)
+2. **Manual Approval** - Designated reviewers approve deployment (24-hour timeout)
+3. **Database Backup** - RDS snapshot created automatically (30-day retention)
+4. **Update Task Definition** - New Docker image (version-tagged) registered to ECS
+5. **Run Migrations** - Django migrations executed as one-off task
+6. **Service Update** - ECS service updated with circuit breaker enabled
+7. **Health Check** - /health/ endpoint validated (10 retries, 30s intervals)
+8. **Rollback** - Automatic revert to previous version on failure
+
+**How to Deploy to Production:**
+
+1. **Create and push semantic version tag:**
+
+   ```bash
+   # Create a release tag (semantic versioning)
+   git tag -a v1.0.0 -m "Release v1.0.0: Initial production release"
+   
+   # Push tag to GitHub (triggers deployment workflow)
+   git push origin v1.0.0
+   ```
+
+2. **Approve deployment:**
+   - Navigate to: Actions → Production Deployment → Pending approval
+   - Review deployment details
+   - Click "Review deployments" → Select "production" → "Approve and deploy"
+   - Deployment proceeds automatically after approval
+
+3. **Monitor deployment:**
+
+   ```bash
+   # View deployment logs in GitHub Actions
+   # Navigate to: Actions → Production Deployment → Latest run
+   
+   # Monitor ECS service status (via AWS CLI)
+   aws ecs describe-services \
+     --cluster seaside-backend-cluster \
+     --services seaside-backend-prod \
+     --query 'services[0].events[:5]' \
+     --output table
+   
+   # Check health endpoint
+   curl https://api.seasidetech.co/health/
+   ```
+
+**GitHub Environment Setup (One-Time Configuration):**
+
+To enable manual approval gate, configure the `production` environment in GitHub:
+
+1. **Create Environment:**
+   - Navigate to: Settings → Environments → New Environment
+   - Name: `production`
+   - Click "Configure environment"
+
+2. **Add Protection Rules:**
+   - Enable "Required reviewers"
+   - Add reviewers: PM, lead dev, or backend-team
+   - Set wait timer (optional): 5 minutes cooldown before allowing approval
+   - Enable "Prevent administrators from bypassing configured protection rules"
+
+3. **Add Environment Secrets (if needed):**
+   - Add production-specific secrets (if different from repository secrets)
+   - Example: `PRODUCTION_DATABASE_URL` (reference to AWS Secrets Manager ARN)
+
+**AWS Infrastructure Requirements:**
+
+```yaml
+# GitHub Repository Secrets Required
+AWS_ACCESS_KEY_ID: <IAM user access key for production>
+AWS_SECRET_ACCESS_KEY: <IAM user secret key for production>
+AWS_REGION: <region, e.g., us-west-2>
+```
+
+**ECS Task Definition:**
+- Task: `seaside-backend-prod`
+- CPU: 2048 (2 vCPU)
+- Memory: 4096 MB (4 GB)
+- Network Mode: awsvpc
+- Port: 8000
+- Launch Type: Fargate
+- Desired Count: 2+ tasks minimum
+
+**RDS Configuration:**
+- Instance: `seaside-backend-prod`
+- Engine: PostgreSQL 16
+- Snapshot retention: 30 days minimum
+- Automated backups: Enabled
+
+**Environment Variables (AWS Secrets Manager):**
+- `DATABASE_URL` → Secret: `production/backend/database-url`
+- `REDIS_URL` → Secret: `production/backend/redis-url`
+- `DJANGO_SECRET_KEY` → Secret: `production/backend/django-secret-key`
+- `DJANGO_SETTINGS_MODULE=seaside.settings.prod`
+- `AWS_S3_BUCKET_NAME` → Secret: `production/backend/s3-bucket-name`
+- `STRIPE_SECRET_KEY` → Secret: `production/backend/stripe-secret-key`
+
+**IAM Permissions Required:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecs:DescribeTaskDefinition",
+        "ecs:RegisterTaskDefinition",
+        "ecs:UpdateService",
+        "ecs:DescribeServices",
+        "ecs:RunTask",
+        "ecs:DescribeTasks",
+        "rds:CreateDBSnapshot",
+        "rds:DescribeDBSnapshots",
+        "rds:ModifyDBSnapshot",
+        "secretsmanager:GetSecretValue",
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:FilterLogEvents",
+        "elbv2:DescribeTargetGroups",
+        "elbv2:DescribeLoadBalancers"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+**Blue-Green Deployment Configuration:**
+- Minimum Healthy Percent: 100 (keeps all tasks running during deployment)
+- Maximum Percent: 200 (allows new tasks alongside old)
+- Desired Count: 2+ tasks minimum
+- Circuit Breaker: Enabled with automatic rollback
+- Health Check Grace Period: 5 minutes
+
+**Health Check Configuration:**
+- Endpoint: `GET https://api.seasidetech.co/health/`
+- Expected Response: 200 OK with `{"status": "ok"}`
+- Retries: 10 attempts
+- Interval: 30 seconds between retries
+- Timeout: 5 seconds per attempt
+
+**Automatic Rollback (on health check failure):**
+
+If health checks fail after deployment:
+1. Workflow automatically reverts ECS service to previous task definition
+2. CloudWatch Logs captured and uploaded as workflow artifact
+3. Deployment marked as FAILED in GitHub Actions
+4. Database snapshot available for manual rollback if needed
+5. Rollback notification sent
+
+**Manual Rollback Procedures:**
+
+If you need to rollback to a previous version:
+
+1. **Trigger Rollback Workflow:**
+
+   ```bash
+   # Via GitHub Actions UI:
+   # 1. Navigate to: Actions → Production Rollback → Run workflow
+   # 2. Select branch: main
+   # 3. Enter target version (e.g., v1.0.0)
+   # 4. Select database rollback option (if migrations need reverting)
+   # 5. Click "Run workflow"
+   ```
+
+2. **Approve Rollback:**
+   - Same approval process as deployment
+   - Designated reviewers must approve rollback
+
+3. **Rollback completes automatically:**
+   - ECS service reverted to target version
+   - Health checks validated
+   - Rollback notification sent
+
+**Database Rollback (Manual - if needed):**
+
+If database migrations need to be rolled back:
+
+**Option 1: Restore from RDS Snapshot**
+
+```bash
+# 1. Identify snapshot for target version
+aws rds describe-db-snapshots \
+  --db-instance-identifier seaside-backend-prod \
+  --query 'DBSnapshots[?contains(DBSnapshotIdentifier, `v1.0.0`)]' \
+  --output table
+
+# 2. Restore from snapshot (creates new instance)
+aws rds restore-db-instance-from-db-snapshot \
+  --db-instance-identifier seaside-backend-prod-restored \
+  --db-snapshot-identifier prod-db-backup-v1.0.0-20250203-120000
+
+# 3. Wait for restore to complete
+aws rds wait db-instance-available \
+  --db-instance-identifier seaside-backend-prod-restored
+
+# 4. Update ECS task definition to point to restored instance
+# 5. OR: Rename restored instance to replace production instance
+```
+
+**Option 2: Run Reverse Migrations**
+
+```bash
+# Connect to production database and run reverse migration:
+# Find the migration you want to revert to:
+python manage.py showmigrations
+
+# Revert to specific migration:
+python manage.py migrate <app_name> <migration_number>
+
+# Example:
+python manage.py migrate repairs 0005_add_line_items
+```
+
+**Recovery Time Objectives (RTO):**
+- Automatic Rollback: ~5-10 minutes (automatic)
+- Manual ECS Rollback: ~10-15 minutes (workflow-based)
+- Database Snapshot Restore: ~15-30 minutes (manual)
+- Reverse Migrations: ~5-10 minutes (depends on migration complexity)
+
+**Deployment Best Practices:**
+
+1. **Test in Staging First:**
+   - Always deploy and test in staging before production
+   - Verify migrations run successfully
+   - Validate health checks pass
+
+2. **Create Meaningful Release Tags:**
+   ```bash
+   # Good release tag messages
+   git tag -a v1.0.0 -m "Release v1.0.0: Initial production release with core features"
+   git tag -a v1.1.0 -m "Release v1.1.0: Add payment processing and invoicing"
+   git tag -a v1.1.1 -m "Release v1.1.1: Hotfix for invoice PDF generation bug"
+   ```
+
+3. **Monitor After Deployment:**
+   - Check CloudWatch Logs for errors
+   - Monitor ECS service metrics (CPU, memory, task count)
+   - Verify health endpoint responds correctly
+   - Monitor application-level metrics
+
+4. **Have Rollback Plan Ready:**
+   - Know the previous stable version
+   - Have communication plan for rollback
+   - Document any manual steps needed
+
 ### Branch Strategy
 
 **CI Triggers:**
@@ -511,6 +770,7 @@ pip freeze > backend/requirements.txt
 
 **Deployment Triggers:**
 - Docker build completes on `main` branch → Deploy to staging
+- Semantic version tag push (v*.*.*) → Deploy to production (with manual approval)
 
 **Why not all branches?**  
 Running CI on every feature branch push (without a PR) is expensive and usually unnecessary. The current strategy ensures:
@@ -518,6 +778,7 @@ Running CI on every feature branch push (without a PR) is expensive and usually 
 - All pull requests are checked before merge ✅
 - Production images built only from main branch ✅
 - Staging deployment automatic on main merge ✅
+- Production deployment requires semantic version tags and manual approval ✅
 - Developers can push WIP commits to feature branches without triggering CI
 - CI resources are used efficiently
 

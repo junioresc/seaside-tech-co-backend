@@ -1,0 +1,250 @@
+name: Production Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'Version to rollback to (e.g., v1.0.0)'
+        required: true
+        type: string
+      rollback_database:
+        description: 'Rollback database migrations? (Requires manual verification)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-west-2
+  ECS_CLUSTER: seaside-backend-cluster
+  ECS_SERVICE: seaside-backend-prod
+  CONTAINER_NAME: backend-api
+  RDS_INSTANCE: seaside-backend-prod
+
+jobs:
+  rollback-production:
+    name: Rollback Production to ${{ inputs.target_version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    environment:
+      name: production
+      url: https://api.seasidetech.co
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_version }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate target version
+        id: validate
+        run: |
+          echo "🔍 Validating target version: ${{ inputs.target_version }}"
+          
+          # Check if version tag exists in git
+          if ! git rev-parse ${{ inputs.target_version }} >/dev/null 2>&1; then
+            echo "❌ Git tag not found: ${{ inputs.target_version }}"
+            exit 1
+          fi
+          
+          # Check if Docker image exists for this version
+          echo "Checking Docker image: ghcr.io/${{ github.repository }}/backend:${{ inputs.target_version }}"
+          
+          # Note: This requires Docker to be available and authenticated
+          # We'll check via ECS task definitions instead
+          TASK_DEF_ARN=$(aws ecs list-task-definitions \
+            --family-prefix ${{ env.ECS_SERVICE }} \
+            --status ACTIVE \
+            --sort DESC \
+            --query 'taskDefinitionArns[*]' \
+            --output text | tr '\t' '\n' | grep -m1 "${{ inputs.target_version }}" || echo "")
+          
+          if [ -z "$TASK_DEF_ARN" ]; then
+            echo "⚠️ Warning: No task definition found with version ${{ inputs.target_version }}"
+            echo "Will attempt to create task definition from Docker image"
+            echo "task_def_exists=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Task definition found: $TASK_DEF_ARN"
+            echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+            echo "task_def_exists=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get current task definition
+        id: current
+        run: |
+          CURRENT_TASK_DEF=$(aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          
+          echo "current_task_def=$CURRENT_TASK_DEF" >> $GITHUB_OUTPUT
+          echo "📋 Current task definition: $CURRENT_TASK_DEF"
+
+      - name: Create task definition if needed
+        if: steps.validate.outputs.task_def_exists == 'false'
+        id: create-task-def
+        run: |
+          echo "📝 Creating task definition for version ${{ inputs.target_version }}"
+          
+          # Fetch current task definition structure
+          TASK_DEFINITION=$(aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_SERVICE }} \
+            --query 'taskDefinition' \
+            --output json)
+          
+          # Update image tag with target version
+          NEW_TASK_DEF=$(echo $TASK_DEFINITION | jq --arg IMAGE "ghcr.io/${{ github.repository }}/backend:${{ inputs.target_version }}" \
+            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy) | 
+            .containerDefinitions[0].image = $IMAGE')
+          
+          # Register new task definition
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          
+          echo "task_def_arn=$NEW_TASK_DEF_ARN" >> $GITHUB_OUTPUT
+          echo "✅ Task definition created: $NEW_TASK_DEF_ARN"
+
+      - name: Database rollback warning
+        if: inputs.rollback_database == true
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⚠️  DATABASE ROLLBACK REQUESTED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "This flag indicates database migrations should be rolled back."
+          echo "Database rollback must be performed manually:"
+          echo ""
+          echo "1. Identify RDS snapshot for version ${{ inputs.target_version }}"
+          echo "2. Restore RDS instance from snapshot"
+          echo "3. OR run reverse migrations manually"
+          echo ""
+          echo "See README.md for complete database rollback procedures."
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Rollback ECS service
+        id: rollback
+        run: |
+          echo "🔄 Rolling back ECS service to version ${{ inputs.target_version }}"
+          
+          # Determine task definition ARN
+          if [ "${{ steps.validate.outputs.task_def_exists }}" == "true" ]; then
+            TASK_DEF_ARN="${{ steps.validate.outputs.task_def_arn }}"
+          else
+            TASK_DEF_ARN="${{ steps.create-task-def.outputs.task_def_arn }}"
+          fi
+          
+          echo "Target task definition: $TASK_DEF_ARN"
+          
+          # Update service to use target task definition
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition $TASK_DEF_ARN \
+            --force-new-deployment \
+            --deployment-configuration '{
+              "deploymentCircuitBreaker": {
+                "enable": true,
+                "rollback": true
+              },
+              "minimumHealthyPercent": 100,
+              "maximumPercent": 200
+            }'
+          
+          echo "✅ Rollback initiated"
+
+      - name: Wait for service stability
+        run: |
+          echo "⏳ Waiting for rollback to complete..."
+          
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }}
+          
+          echo "✅ Service is stable"
+
+      - name: Health check after rollback
+        id: health_check
+        run: |
+          echo "🏥 Verifying health after rollback..."
+          echo "Target: https://api.seasidetech.co/health/"
+          
+          for i in {1..10}; do
+            echo "Health check attempt $i/10..."
+            
+            RESPONSE=$(curl -s -w "\n%{http_code}" https://api.seasidetech.co/health/ || echo "000")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | head -n-1)
+            
+            echo "Response code: $HTTP_CODE"
+            echo "Response body: $BODY"
+            
+            if [ "$HTTP_CODE" = "200" ] && echo "$BODY" | grep -q '"status"'; then
+              echo "✅ Health check passed!"
+              exit 0
+            fi
+            
+            if [ $i -lt 10 ]; then
+              echo "⚠️ Health check failed, retrying in 30 seconds..."
+              sleep 30
+            fi
+          done
+          
+          echo "❌ Rollback health check failed after 10 attempts"
+          exit 1
+
+      - name: Rollback success notification
+        if: success()
+        run: |
+          echo "## ✅ Production Rollback Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Target Version:** ${{ inputs.target_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Previous Version:** ${{ steps.current.outputs.current_task_def }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Rolled Back By:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_STEP_SUMMARY
+          echo "**Database Rollback Requested:** ${{ inputs.rollback_database }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:**" >> $GITHUB_STEP_SUMMARY
+          echo "✅ ECS service rolled back successfully" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Health checks passed" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.rollback_database }}" == "true" ]; then
+            echo "⚠️ Database rollback requires manual action (see README.md)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Links:**" >> $GITHUB_STEP_SUMMARY
+          echo "- [Production API](https://api.seasidetech.co)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Health Check](https://api.seasidetech.co/health/)" >> $GITHUB_STEP_SUMMARY
+          echo "- [CloudWatch Logs](https://console.aws.amazon.com/cloudwatch/home?region=${{ env.AWS_REGION }}#logsV2:log-groups/log-group//ecs/${{ env.ECS_SERVICE }})" >> $GITHUB_STEP_SUMMARY
+
+      - name: Rollback failure notification
+        if: failure()
+        run: |
+          echo "## ❌ Production Rollback Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Target Version:** ${{ inputs.target_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Attempted By:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Recovery Actions:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check ECS service events for error details" >> $GITHUB_STEP_SUMMARY
+          echo "2. Verify target version exists and Docker image is available" >> $GITHUB_STEP_SUMMARY
+          echo "3. Review CloudWatch Logs for application errors" >> $GITHUB_STEP_SUMMARY
+          echo "4. Contact infrastructure team if issue persists" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Current State:**" >> $GITHUB_STEP_SUMMARY
+          echo "Service may still be running previous version: ${{ steps.current.outputs.current_task_def }}" >> $GITHUB_STEP_SUMMARY
+

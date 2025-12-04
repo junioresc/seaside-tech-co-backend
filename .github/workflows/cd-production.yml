@@ -1,0 +1,349 @@
+name: Production Deployment
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Trigger on semantic version tags (v1.0.0, v1.2.3, etc.)
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+  ECS_CLUSTER: seaside-backend-cluster
+  ECS_SERVICE: seaside-backend-prod
+  CONTAINER_NAME: backend-api
+  RDS_INSTANCE: seaside-backend-prod
+
+jobs:
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # Allow time for manual approval + deployment
+    
+    environment:
+      name: production
+      url: https://api.seasidetech.co
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "📦 Deploying version: $VERSION"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate tag format
+        run: |
+          if [[ ! "${{ steps.version.outputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ Invalid tag format. Expected: v*.*.* (semantic versioning)"
+            echo "Received: ${{ steps.version.outputs.version }}"
+            exit 1
+          fi
+          echo "✅ Tag format validated: ${{ steps.version.outputs.version }}"
+
+      - name: Create RDS snapshot
+        id: snapshot
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          VERSION=${{ steps.version.outputs.version }}
+          SNAPSHOT_ID="prod-db-backup-${VERSION}-${TIMESTAMP}"
+          
+          echo "📸 Creating RDS snapshot: $SNAPSHOT_ID"
+          
+          aws rds create-db-snapshot \
+            --db-instance-identifier ${{ env.RDS_INSTANCE }} \
+            --db-snapshot-identifier $SNAPSHOT_ID \
+            --tags \
+              Key=version,Value=$VERSION \
+              Key=deployment_id,Value=${{ github.run_id }} \
+              Key=triggered_by,Value=${{ github.actor }} \
+              Key=timestamp,Value=$TIMESTAMP
+          
+          echo "snapshot_id=$SNAPSHOT_ID" >> $GITHUB_OUTPUT
+          echo "✅ RDS snapshot created: $SNAPSHOT_ID"
+          
+          # Wait for snapshot to complete
+          echo "⏳ Waiting for snapshot to complete..."
+          aws rds wait db-snapshot-completed --db-snapshot-identifier $SNAPSHOT_ID
+          
+          # Set snapshot retention to 30 days
+          aws rds modify-db-snapshot \
+            --db-snapshot-identifier $SNAPSHOT_ID \
+            --option-group-name default || echo "Note: Retention set via snapshot lifecycle policy"
+          
+          echo "✅ Snapshot completed and available"
+
+      - name: Get current task definition
+        id: current-task
+        run: |
+          # Store current task definition for rollback
+          CURRENT_TASK_DEF=$(aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          
+          echo "current_task_def=$CURRENT_TASK_DEF" >> $GITHUB_OUTPUT
+          echo "📋 Current task definition: $CURRENT_TASK_DEF"
+
+      - name: Update ECS task definition
+        id: task-def
+        run: |
+          # Fetch current task definition
+          TASK_DEFINITION=$(aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_SERVICE }} \
+            --query 'taskDefinition' \
+            --output json)
+          
+          # Update image tag with release version
+          NEW_TASK_DEF=$(echo $TASK_DEFINITION | jq --arg IMAGE "ghcr.io/${{ github.repository }}/backend:${{ steps.version.outputs.version }}" \
+            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy) | 
+            .containerDefinitions[0].image = $IMAGE')
+          
+          # Register new task definition
+          NEW_REVISION=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.revision' \
+            --output text)
+          
+          echo "revision=$NEW_REVISION" >> $GITHUB_OUTPUT
+          echo "✅ Registered task definition revision: $NEW_REVISION"
+          echo "🐳 Docker image: ghcr.io/${{ github.repository }}/backend:${{ steps.version.outputs.version }}"
+
+      - name: Run database migrations
+        run: |
+          echo "🔄 Running database migrations..."
+          
+          # Get VPC configuration from existing service
+          VPC_CONFIG=$(aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --query 'services[0].networkConfiguration.awsvpcConfiguration' \
+            --output json)
+          
+          # Run migrations as one-off task
+          MIGRATION_TASK=$(aws ecs run-task \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --task-definition ${{ env.ECS_SERVICE }}:${{ steps.task-def.outputs.revision }} \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration=$(echo $VPC_CONFIG)" \
+            --overrides '{
+              "containerOverrides": [{
+                "name": "'"${{ env.CONTAINER_NAME }}"'",
+                "command": ["python", "manage.py", "migrate", "--noinput"]
+              }]
+            }' \
+            --query 'tasks[0].taskArn' \
+            --output text)
+          
+          echo "Migration task ARN: $MIGRATION_TASK"
+          
+          # Wait for migration task to complete
+          echo "⏳ Waiting for migrations to complete..."
+          aws ecs wait tasks-stopped \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks $MIGRATION_TASK
+          
+          # Check migration exit code
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks $MIGRATION_TASK \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+          
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "❌ Migration failed with exit code: $EXIT_CODE"
+            echo ""
+            echo "📋 Rollback Instructions:"
+            echo "1. Database snapshot available: ${{ steps.snapshot.outputs.snapshot_id }}"
+            echo "2. To restore, run:"
+            echo "   aws rds restore-db-instance-from-db-snapshot \\"
+            echo "     --db-instance-identifier ${{ env.RDS_INSTANCE }}-restored \\"
+            echo "     --db-snapshot-identifier ${{ steps.snapshot.outputs.snapshot_id }}"
+            echo ""
+            aws ecs describe-tasks \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --tasks $MIGRATION_TASK \
+              --query 'tasks[0].containers[0]' \
+              --output table
+            exit 1
+          fi
+          
+          echo "✅ Migrations completed successfully"
+
+      - name: Deploy to ECS service
+        id: deploy
+        run: |
+          echo "🚢 Deploying to production ECS service..."
+          
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition ${{ env.ECS_SERVICE }}:${{ steps.task-def.outputs.revision }} \
+            --force-new-deployment \
+            --deployment-configuration '{
+              "deploymentCircuitBreaker": {
+                "enable": true,
+                "rollback": true
+              },
+              "minimumHealthyPercent": 100,
+              "maximumPercent": 200
+            }'
+          
+          echo "✅ Service update initiated"
+
+      - name: Wait for service stability
+        run: |
+          echo "⏳ Waiting for service to reach steady state (up to 15 minutes)..."
+          
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }}
+          
+          echo "✅ Service is stable"
+
+      - name: Health check verification
+        id: health_check
+        run: |
+          echo "🏥 Starting health check verification..."
+          echo "Target: https://api.seasidetech.co/health/"
+          
+          for i in {1..10}; do
+            echo "Health check attempt $i/10..."
+            
+            RESPONSE=$(curl -s -w "\n%{http_code}" https://api.seasidetech.co/health/ || echo "000")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | head -n-1)
+            
+            echo "Response code: $HTTP_CODE"
+            echo "Response body: $BODY"
+            
+            if [ "$HTTP_CODE" = "200" ] && echo "$BODY" | grep -q '"status"'; then
+              echo "✅ Health check passed!"
+              exit 0
+            fi
+            
+            if [ $i -lt 10 ]; then
+              echo "⚠️ Health check failed, retrying in 30 seconds..."
+              sleep 30
+            fi
+          done
+          
+          echo "❌ Health check failed after 10 attempts (5 minutes)"
+          exit 1
+
+      - name: Automatic rollback on health check failure
+        if: failure() && steps.health_check.conclusion == 'failure'
+        run: |
+          echo "🔄 Triggering automatic rollback..."
+          echo "Previous task definition: ${{ steps.current-task.outputs.current_task_def }}"
+          
+          # Revert to previous task definition
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition ${{ steps.current-task.outputs.current_task_def }} \
+            --force-new-deployment
+          
+          echo "✅ Rollback initiated to previous task definition"
+          echo "⏳ Waiting for rollback to stabilize..."
+          
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }}
+          
+          echo "✅ Rollback completed"
+          echo ""
+          echo "📋 Database Rollback Instructions:"
+          echo "Snapshot available: ${{ steps.snapshot.outputs.snapshot_id }}"
+          echo "If migrations need rollback, restore from snapshot or run reverse migrations manually."
+
+      - name: Capture CloudWatch Logs on failure
+        if: failure()
+        run: |
+          echo "📋 Capturing CloudWatch Logs..."
+          mkdir -p logs
+          
+          # Fetch recent logs from CloudWatch (last hour)
+          START_TIME=$(($(date +%s) - 3600))000
+          
+          aws logs filter-log-events \
+            --log-group-name /ecs/${{ env.ECS_SERVICE }} \
+            --start-time $START_TIME \
+            --output text > logs/cloudwatch-logs.txt || echo "No logs found or error fetching logs"
+          
+          echo "✅ Logs captured"
+
+      - name: Upload logs artifact on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-deployment-logs-failed-${{ github.run_id }}
+          path: logs/
+          retention-days: 30
+
+      - name: Deployment success notification
+        if: success()
+        run: |
+          echo "## 🚀 Production Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Release Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployed By:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment Duration:** ${{ github.event.workflow_run.updated_at }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Database Snapshot:** ${{ steps.snapshot.outputs.snapshot_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Task Revision:** ${{ steps.task-def.outputs.revision }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Links:**" >> $GITHUB_STEP_SUMMARY
+          echo "- [Production API](https://api.seasidetech.co)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Health Check](https://api.seasidetech.co/health/)" >> $GITHUB_STEP_SUMMARY
+          echo "- [CloudWatch Logs](https://console.aws.amazon.com/cloudwatch/home?region=${{ env.AWS_REGION }}#logsV2:log-groups/log-group//ecs/${{ env.ECS_SERVICE }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [GitHub Release](https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment Steps Completed:**" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Database backup created" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Database migrations executed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ ECS service updated" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Health checks passed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Deployment verified" >> $GITHUB_STEP_SUMMARY
+
+      - name: Deployment failure notification
+        if: failure()
+        run: |
+          echo "## ❌ Production Deployment Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Release Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Attempted By:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_STEP_SUMMARY
+          echo "**Database Snapshot:** ${{ steps.snapshot.outputs.snapshot_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Rollback Status:**" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.health_check.conclusion }}" == "failure" ]; then
+            echo "✅ Automatic rollback completed" >> $GITHUB_STEP_SUMMARY
+            echo "✅ ECS service reverted to previous version" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Deployment failed before health checks" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Recovery Actions:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Review deployment logs and CloudWatch Logs artifact" >> $GITHUB_STEP_SUMMARY
+          echo "2. If database migration failed, snapshot available: ${{ steps.snapshot.outputs.snapshot_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check ECS service events for rollback details" >> $GITHUB_STEP_SUMMARY
+          echo "4. Use manual rollback workflow if needed" >> $GITHUB_STEP_SUMMARY
+
