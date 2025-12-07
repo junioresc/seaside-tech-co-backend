@@ -32,6 +32,42 @@ open http://localhost:8025 # MailHog
 open http://localhost:9001 # MinIO console (minio:minioadmin)
 ```
 
+## Initial Data Setup
+
+The initial data migration runs automatically when you run `python manage.py migrate`. This creates essential reference data for the system:
+
+**What gets created:**
+- **1 Organization**: Seaside Tech Co with contact information
+- **3 Stores**: Main Street, Downtown, and West Side locations with complete addresses, phone numbers, business hours, and timezone (America/Los_Angeles)
+- **9 Device Types**: Laptop, Desktop PC, Phone, Tablet, Smartwatch, Smart TV, Smart Speaker, Gaming Console, and Other
+- **20 Service Types**: Including Virus Removal, Data Recovery, Hardware Repair, Screen Replacement, Battery Replacement, and more with realistic pricing for Seaside, CA area
+
+**Migration files:**
+- `apps/orgs/migrations/0002_initial_seaside_data.py` - Organization and Stores
+- `apps/repairs/migrations/0002_initial_device_types.py` - Device Types
+- `apps/appointments/migrations/0002_initial_service_types.py` - Service Types
+
+**Idempotency:**
+The migrations are safe to run multiple times. If data already exists, the migrations will skip creation and log "already exists, skipping" messages.
+
+**Rollback (if needed):**
+```bash
+# Rollback service types
+python manage.py migrate appointments 0001
+
+# Rollback device types
+python manage.py migrate repairs 0001
+
+# Rollback organization and stores
+python manage.py migrate orgs 0001
+```
+
+**After migration:**
+Remember to create a superuser account:
+```bash
+python manage.py createsuperuser
+```
+
 ## Tests
 
 ```bash

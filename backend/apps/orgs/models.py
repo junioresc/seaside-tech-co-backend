@@ -9,6 +9,9 @@ class Organization(BaseModel):
     legal_name = models.CharField(max_length=255, null=True, blank=True)
     tax_id = models.CharField(max_length=64, null=True, blank=True)
     billing_email = models.EmailField(null=True, blank=True)
+    contact_email = models.EmailField(null=True, blank=True)
+    contact_phone = models.CharField(max_length=30, null=True, blank=True)
+    description = models.TextField(null=True, blank=True)
 
     def __str__(self) -> str:  # pragma: no cover
         return self.name
@@ -20,6 +23,8 @@ class Store(BaseModel):
     address = models.JSONField(null=True, blank=True)
     timezone = models.CharField(max_length=64, default="America/Los_Angeles")
     phone = models.CharField(max_length=30, null=True, blank=True)
+    business_hours = models.TextField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
 
     def __str__(self) -> str:  # pragma: no cover
         return f"{self.name} ({self.organization.name})"

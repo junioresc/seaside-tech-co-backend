@@ -18,6 +18,8 @@ from apps.users.models import UserProfile
 class DeviceType(BaseModel):
     code = models.CharField(max_length=64, unique=True)
     name = models.CharField(max_length=120)
+    description = models.TextField(null=True, blank=True)
+    help_text = models.TextField(null=True, blank=True)
 
     def __str__(self) -> str:  # pragma: no cover
         return self.name
@@ -60,8 +62,10 @@ class RepairOrder(RepairStatusMixin, StatusModel, BaseModel):
     device_serial = models.CharField(max_length=120, null=True, blank=True, db_index=True)
     device_type = models.ForeignKey(DeviceType, on_delete=models.SET_NULL, null=True, blank=True)
     issue_description = models.TextField(null=True, blank=True)
-    estimated_cost_cents = models.IntegerField(null=True, blank=True)
-    actual_cost_cents = models.IntegerField(null=True, blank=True)
+    estimated_cost = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+    actual_cost = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     pickup_code = models.CharField(max_length=12, null=True, blank=True)
     label_data = models.JSONField(null=True, blank=True)
     public_lookup_token = models.CharField(max_length=64, null=True, blank=True)

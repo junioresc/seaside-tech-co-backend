@@ -1,9 +1,10 @@
 from django.conf import settings
 from django.db import models
 
-from encrypted_fields.fields import EncryptedTextField
+from encrypted_fields.fields import EncryptedEmailField, EncryptedTextField
 
 from apps.common.models import BaseModel
+from apps.common.fields import EncryptedPhoneNumberField
 
 
 class Customer(BaseModel):
@@ -14,10 +15,10 @@ class Customer(BaseModel):
         blank=True,
         related_name="customer",
     )
-    email = models.EmailField(unique=True, null=True, blank=True)
+    email = EncryptedEmailField(unique=True, null=True, blank=True)
     first_name = models.CharField(max_length=80)
     last_name = models.CharField(max_length=80)
-    phone = EncryptedTextField(null=True, blank=True)
+    phone = EncryptedPhoneNumberField(null=True, blank=True)
     address = EncryptedTextField(null=True, blank=True)
     avatar = models.URLField(null=True, blank=True)
     invited = models.BooleanField(default=False)
