@@ -3,8 +3,8 @@ from django.db import models
 
 from encrypted_fields.fields import EncryptedEmailField, EncryptedTextField
 
-from apps.common.models import BaseModel
 from apps.common.fields import EncryptedPhoneNumberField
+from apps.common.models import BaseModel
 
 
 class Customer(BaseModel):

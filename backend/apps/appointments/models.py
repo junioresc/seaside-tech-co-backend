@@ -10,9 +10,7 @@ class ServiceType(BaseModel):
     code = models.CharField(max_length=64, unique=True)
     name = models.CharField(max_length=120)
     default_duration_minutes = models.IntegerField(default=30)
-    estimated_price = models.DecimalField(
-        max_digits=12, decimal_places=2, default=Decimal("0.00")
-    )
+    estimated_price = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     description = models.TextField(null=True, blank=True)
 
     def __str__(self) -> str:  # pragma: no cover
